@@ -1,22 +1,22 @@
+# app.py
 import streamlit as st
 import pandas as pd
 import psycopg2
+import psycopg2.extras
 import random
-from datetime import datetime, timedelta
-import numpy as np
+from datetime import datetime
 from collections import defaultdict
 import os
 from urllib.parse import urlparse
 
-# Page configuration
+# ---------- Page config & CSS ----------
 st.set_page_config(
-    page_title="PostgreSQL Timetable Generator",
+    page_title="Postgres Timetable Generator",
     page_icon="📚",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS for better styling
 st.markdown("""
 <style>
     .main-header {
@@ -46,309 +46,221 @@ st.markdown("""
         background-color: #f5f5f5 !important;
         color: #666;
     }
-    .metric-card {
-        background-color: #f8f9fa;
-        padding: 1rem;
-        border-radius: 8px;
-        border-left: 4px solid #4CAF50;
-        margin: 0.5rem 0;
-    }
 </style>
 """, unsafe_allow_html=True)
 
-# Title
 st.markdown("""
 <div class="main-header">
     <h1>🎓 PostgreSQL Timetable Generator</h1>
-    <p>Connect to PostgreSQL database and generate optimal timetables</p>
+    <p>Connect to your PostgreSQL database and generate optimal timetables</p>
 </div>
 """, unsafe_allow_html=True)
 
-class PostgreSQLTimetableGenerator:
+# ---------- DB helper class ----------
+class PostgresDB:
     def __init__(self):
         self.conn = None
+        self.dsn = None
+        self.schema = None  # optional schema to search
+    
+    def connect(self, *, database_url=None, host=None, port=None, dbname=None, user=None, password=None, schema=None):
+        """
+        Connect using a full DATABASE_URL or individual components.
+        DATABASE_URL example: postgresql://user:password@host:5432/dbname
+        """
+        try:
+            if database_url:
+                # parse and use as dsn for psycopg2
+                self.dsn = database_url
+                self.conn = psycopg2.connect(self.dsn)
+            else:
+                host = host or "localhost"
+                port = port or 5432
+                dbname = dbname or "postgres"
+                self.conn = psycopg2.connect(host=host, port=port, dbname=dbname, user=user, password=password)
+                # construct dsn string for informational use
+                self.dsn = f"postgresql://{user or ''}:****@{host}:{port}/{dbname}"
+            self.schema = schema  # optional schema name to use when querying metadata
+            return True, None
+        except Exception as e:
+            return False, str(e)
+    
+    def close(self):
+        if self.conn:
+            try:
+                self.conn.close()
+            except:
+                pass
+            self.conn = None
+    
+    def list_tables(self):
+        """Return a list of user tables (schema.table)."""
+        if not self.conn:
+            raise Exception("Not connected")
+        cur = self.conn.cursor()
+        schema_filter = f"AND table_schema = '{self.schema}'" if self.schema else "AND table_schema NOT IN ('pg_catalog', 'information_schema')"
+        sql = f"""
+            SELECT table_schema, table_name
+            FROM information_schema.tables
+            WHERE table_type='BASE TABLE' {schema_filter}
+            ORDER BY table_schema, table_name;
+        """
+        cur.execute(sql)
+        rows = cur.fetchall()
+        # return list of "schema.table" or just table if schema is default
+        return [f"{r[0]}.{r[1]}" for r in rows]
+    
+    def get_table_columns(self, schema_name, table_name):
+        """Return list of columns for given schema and table."""
+        if not self.conn:
+            raise Exception("Not connected")
+        cur = self.conn.cursor()
+        sql = """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema = %s AND table_name = %s
+            ORDER BY ordinal_position;
+        """
+        cur.execute(sql, (schema_name, table_name))
+        return [r[0] for r in cur.fetchall()]
+    
+    def fetch_all(self, schema_name, table_name, limit=None):
+        """Fetch all rows (optionally limited) safely by validating schema and table names."""
+        if not self.conn:
+            raise Exception("Not connected")
+        # Safe guard: only use allowed identifiers obtained from list_tables
+        qualified = f"{schema_name}.{table_name}"
+        allowed = set(self.list_tables())
+        if qualified not in allowed:
+            raise Exception(f"Table {qualified} not found or not allowed")
+        
+        cur = self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        if limit:
+            cur.execute(f"SELECT * FROM {psycopg2.sql.Identifier(schema_name).string}.{psycopg2.sql.Identifier(table_name).string} LIMIT %s")
+        # Using formatted SQL above with identifiers is tricky; instead use safe string with placeholders after validation:
+        cur.execute(f"SELECT * FROM \"{schema_name}\".\"{table_name}\"" + (f" LIMIT %s" if limit else ""), (limit,) if limit else None)
+        return cur.fetchall()
+    
+    def query(self, sql, params=None):
+        """Run arbitrary SELECT query (read-only)"""
+        if not self.conn:
+            raise Exception("Not connected")
+        cur = self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute(sql, params or ())
+        return cur.fetchall()
+
+# ---------- Timetable generator (logic ported from your version) ----------
+class SQLTimetableGenerator:
+    def __init__(self, db: PostgresDB = None):
+        self.db = db or PostgresDB()
         self.timetable = {}
         self.working_days = []
         self.periods_per_day = 6
         self.teacher_workload = defaultdict(int)
         self.class_schedule = defaultdict(lambda: defaultdict(list))
         self.teacher_schedule = defaultdict(lambda: defaultdict(list))
-        
-    def connect_to_database(self, connection_params=None, database_url=None):
-        """Connect to PostgreSQL database"""
-        try:
-            if database_url:
-                # Parse database URL (for Render/Heroku style)
-                self.conn = psycopg2.connect(database_url)
-            elif connection_params:
-                # Connect using individual parameters
-                self.conn = psycopg2.connect(
-                    host=connection_params['host'],
-                    port=connection_params['port'],
-                    database=connection_params['database'],
-                    user=connection_params['user'],
-                    password=connection_params['password']
-                )
-            else:
-                raise Exception("No connection parameters provided")
-            
-            # Test connection
-            cursor = self.conn.cursor()
-            cursor.execute("SELECT version();")
-            version = cursor.fetchone()
-            
-            # Get table list
-            cursor.execute("""
-                SELECT table_name 
-                FROM information_schema.tables 
-                WHERE table_schema = 'public'
-            """)
-            tables = cursor.fetchall()
-            
-            st.success(f"✅ Connected to PostgreSQL! Found {len(tables)} tables.")
-            return True
-            
-        except Exception as e:
-            st.error(f"❌ Failed to connect to PostgreSQL: {e}")
-            return False
     
-    def get_database_info(self):
-        """Get information about database tables and structure"""
-        if not self.conn:
-            return None
-            
-        cursor = self.conn.cursor()
-        
-        try:
-            # Get all tables
-            cursor.execute("""
-                SELECT table_name 
-                FROM information_schema.tables 
-                WHERE table_schema = 'public'
-                ORDER BY table_name
-            """)
-            tables = [row[0] for row in cursor.fetchall()]
-            
-            info = {"tables": {}}
-            
-            for table in tables:
-                # Get column information
-                cursor.execute("""
-                    SELECT column_name, data_type 
-                    FROM information_schema.columns 
-                    WHERE table_name = %s AND table_schema = 'public'
-                    ORDER BY ordinal_position
-                """, (table,))
-                columns = cursor.fetchall()
-                
-                # Get row count
-                cursor.execute(f'SELECT COUNT(*) FROM "{table}"')
-                count = cursor.fetchone()[0]
-                
-                info["tables"][table] = {
-                    "columns": [f"{col[0]} ({col[1]})" for col in columns],
-                    "row_count": count
-                }
-            
-            return info
-            
-        except Exception as e:
-            st.error(f"Error getting database info: {e}")
-            return None
+    # ---- Database dependent loaders ----
+    def _find_table(self, candidate_names):
+        """Search through DB tables for first match among candidate_names.
+           Returns (schema, table) or (None, None)"""
+        all_tables = self.db.list_tables()
+        # all_tables entries look like 'schema.table'
+        for cand in candidate_names:
+            for full in all_tables:
+                sch, tbl = full.split(".", 1)
+                if tbl.lower() == cand.lower() or full.lower() == cand.lower() or f"{sch}.{tbl}".lower() == cand.lower():
+                    return sch, tbl
+        return None, None
     
     def load_teachers(self):
-        """Load teachers from database"""
-        cursor = self.conn.cursor()
+        cur = self.db
+        sch, tbl = self._find_table(['Teachers_Table', 'Teachers', 'Teacher', 'teachers'])
+        if not sch:
+            raise Exception("No teachers table found (searched Teachers / Teacher / teachers)")
+        rows = cur.fetch_all(sch, tbl, limit=None)
+        if not rows:
+            raise Exception("Teachers table is empty")
         
-        # Try different possible table names (case-insensitive)
-        possible_tables = ['teachers_table', 'Teachers_Table', 'teachers', 'Teachers', 'teacher', 'Teacher']
-        teachers_data = []
-        columns = []
-        
-        for table_name in possible_tables:
-            try:
-                cursor.execute(f'SELECT * FROM "{table_name}"')
-                teachers_data = cursor.fetchall()
-                
-                # Get column names
-                cursor.execute("""
-                    SELECT column_name 
-                    FROM information_schema.columns 
-                    WHERE table_name = %s AND table_schema = 'public'
-                    ORDER BY ordinal_position
-                """, (table_name.lower(),))
-                columns = [col[0] for col in cursor.fetchall()]
-                break
-            except:
-                continue
-        
-        if not teachers_data:
-            raise Exception("No teachers table found")
-            
+        # Normalize columns
         teachers = {}
-        for row in teachers_data:
-            row_dict = dict(zip(columns, row))
-            
-            # Handle different column naming conventions
-            teacher_id = (row_dict.get('teacher_id') or 
-                         row_dict.get('Teacher_ID') or 
-                         row_dict.get('teacherId'))
-            
+        for r in rows:
+            # r is a dict (RealDictCursor)
+            teacher_id = r.get('Teacher_ID') or r.get('teacher_id') or r.get('id') or r.get('teacherid')
+            if teacher_id is None:
+                # fallback: use row number
+                teacher_id = str(len(teachers) + 1)
             teachers[teacher_id] = {
-                'name': (row_dict.get('teacher_name') or 
-                        row_dict.get('Teacher_Name') or 
-                        row_dict.get('name') or 
-                        f'Teacher {teacher_id}'),
-                'max_lectures': (row_dict.get('max_lectures_per_week') or 
-                               row_dict.get('Max_Lectures_Per_Week') or 
-                               row_dict.get('max_lectures') or 20),
-                'preferred_slots': (row_dict.get('preferred_slots') or 
-                                  row_dict.get('Preferred_Slots') or 'Any')
+                'name': r.get('Teacher_Name') or r.get('teacher_name') or r.get('name') or f"Teacher {teacher_id}",
+                'max_lectures': int(r.get('Max_Lectures_Per_Week') or r.get('max_lectures_per_week') or r.get('max_lectures') or 20),
+                'preferred_slots': r.get('Preferred_Slots') or r.get('preferred_slots') or 'Any'
             }
-        
         return teachers
     
     def load_subjects(self):
-        """Load subjects from database"""
-        cursor = self.conn.cursor()
-        
-        possible_tables = ['subjects_table', 'Subjects_Table', 'subjects', 'Subjects', 'subject', 'Subject']
-        subjects_data = []
-        columns = []
-        
-        for table_name in possible_tables:
-            try:
-                cursor.execute(f'SELECT * FROM "{table_name}"')
-                subjects_data = cursor.fetchall()
-                
-                cursor.execute("""
-                    SELECT column_name 
-                    FROM information_schema.columns 
-                    WHERE table_name = %s AND table_schema = 'public'
-                    ORDER BY ordinal_position
-                """, (table_name.lower(),))
-                columns = [col[0] for col in cursor.fetchall()]
-                break
-            except:
-                continue
-        
-        if not subjects_data:
-            raise Exception("No subjects table found")
-            
+        cur = self.db
+        sch, tbl = self._find_table(['Subjects_Table', 'Subjects', 'Subject', 'subjects'])
+        if not sch:
+            raise Exception("No subjects table found (searched Subjects / Subject / subjects)")
+        rows = cur.fetch_all(sch, tbl, limit=None)
+        if not rows:
+            raise Exception("Subjects table is empty")
         subjects = {}
-        for row in subjects_data:
-            row_dict = dict(zip(columns, row))
-            
-            subject_id = (row_dict.get('subject_id') or 
-                         row_dict.get('Subject_ID') or 
-                         row_dict.get('subjectId'))
-            
+        for r in rows:
+            subject_id = r.get('Subject_ID') or r.get('subject_id') or r.get('id') or r.get('subjectid')
+            if subject_id is None:
+                subject_id = str(len(subjects) + 1)
+            weekly = r.get('Weekly_Lectures') or r.get('weekly_lectures') or r.get('weekly') or 3
+            # ensure numeric
+            try:
+                weekly = int(weekly)
+            except:
+                weekly = 3
+            is_common = (r.get('Is_Common') or r.get('is_common') or '').lower() in ('yes', 'true', '1')
             subjects[subject_id] = {
-                'name': (row_dict.get('subject_name') or 
-                        row_dict.get('Subject_Name') or 
-                        row_dict.get('name') or 
-                        f'Subject {subject_id}'),
-                'is_common': (row_dict.get('is_common') or 
-                            row_dict.get('Is_Common') == 'Yes'),
-                'weekly_lectures': (row_dict.get('weekly_lectures') or 
-                                  row_dict.get('Weekly_Lectures') or 3)
+                'name': r.get('Subject_Name') or r.get('subject_name') or r.get('name') or f"Subject {subject_id}",
+                'is_common': is_common,
+                'weekly_lectures': weekly
             }
-        
         return subjects
     
     def load_classes(self):
-        """Load classes from database"""
-        cursor = self.conn.cursor()
-        
-        possible_tables = ['classes_table', 'Classes_Table', 'classes', 'Classes', 'class', 'Class']
-        classes_data = []
-        columns = []
-        
-        for table_name in possible_tables:
-            try:
-                cursor.execute(f'SELECT * FROM "{table_name}"')
-                classes_data = cursor.fetchall()
-                
-                cursor.execute("""
-                    SELECT column_name 
-                    FROM information_schema.columns 
-                    WHERE table_name = %s AND table_schema = 'public'
-                    ORDER BY ordinal_position
-                """, (table_name.lower(),))
-                columns = [col[0] for col in cursor.fetchall()]
-                break
-            except:
-                continue
-        
-        if not classes_data:
-            raise Exception("No classes table found")
-            
+        cur = self.db
+        sch, tbl = self._find_table(['Classes_Table', 'Classes', 'Class', 'classes'])
+        if not sch:
+            raise Exception("No classes table found (searched Classes / Class / classes)")
+        rows = cur.fetch_all(sch, tbl, limit=None)
+        if not rows:
+            raise Exception("Classes table is empty")
         classes = {}
-        for row in classes_data:
-            row_dict = dict(zip(columns, row))
-            
-            class_id = (row_dict.get('class_id') or 
-                       row_dict.get('Class_ID') or 
-                       row_dict.get('classId'))
-            
+        for r in rows:
+            class_id = r.get('Class_ID') or r.get('class_id') or r.get('id') or r.get('classid')
+            if class_id is None:
+                class_id = str(len(classes) + 1)
             classes[class_id] = {
-                'name': (row_dict.get('class_name') or 
-                        row_dict.get('Class_Name') or 
-                        row_dict.get('name') or 
-                        class_id),
-                'year': (row_dict.get('year') or 
-                        row_dict.get('Year') or 1)
+                'name': r.get('Class_Name') or r.get('class_name') or r.get('name') or class_id,
+                'year': r.get('Year') or r.get('year') or 1
             }
-        
         return classes
     
     def load_teacher_subject_mapping(self):
-        """Load teacher-subject-class mappings"""
-        cursor = self.conn.cursor()
-        
-        possible_tables = [
-            'teacher_subject_map_table', 'Teacher_Subject_Map_Table',
-            'teacher_subject_map', 'Teacher_Subject_Map',
-            'mapping', 'Mapping'
-        ]
-        mapping_data = []
-        columns = []
-        
-        for table_name in possible_tables:
-            try:
-                cursor.execute(f'SELECT * FROM "{table_name}"')
-                mapping_data = cursor.fetchall()
-                
-                cursor.execute("""
-                    SELECT column_name 
-                    FROM information_schema.columns 
-                    WHERE table_name = %s AND table_schema = 'public'
-                    ORDER BY ordinal_position
-                """, (table_name.lower(),))
-                columns = [col[0] for col in cursor.fetchall()]
-                break
-            except:
-                continue
-        
-        if not mapping_data:
-            raise Exception("No teacher-subject mapping table found")
-        
+        cur = self.db
+        sch, tbl = self._find_table(['Teacher_Subject_Map_Table', 'Teacher_Subject_Map', 'teacher_subject_map', 'teacher_subject'])
+        if not sch:
+            raise Exception("No teacher-subject mapping table found (searched Teacher_Subject_Map / teacher_subject_map)")
+        rows = cur.fetch_all(sch, tbl, limit=None)
+        if not rows:
+            raise Exception("Teacher-subject mapping table is empty")
         mappings = []
-        for row in mapping_data:
-            row_dict = dict(zip(columns, row))
+        for r in rows:
             mappings.append({
-                'teacher_id': (row_dict.get('teacher_id') or 
-                              row_dict.get('Teacher_ID')),
-                'class_id': (row_dict.get('class_id') or 
-                            row_dict.get('Class_ID')),
-                'subject_id': (row_dict.get('subject_id') or 
-                              row_dict.get('Subject_ID'))
+                'teacher_id': r.get('Teacher_ID') or r.get('teacher_id') or r.get('teacherid'),
+                'class_id': r.get('Class_ID') or r.get('class_id') or r.get('classid'),
+                'subject_id': r.get('Subject_ID') or r.get('subject_id') or r.get('subjectid')
             })
-        
         return mappings
     
     def get_teaching_assignments(self):
-        """Get complete teaching assignments with subject details"""
         try:
             teachers = self.load_teachers()
             subjects = self.load_subjects()
@@ -362,9 +274,7 @@ class PostgreSQLTimetableGenerator:
                 subject_id = mapping['subject_id']
                 
                 if teacher_id in teachers and class_id in classes and subject_id in subjects:
-                    # Create multiple assignments based on weekly lectures
                     weekly_lectures = subjects[subject_id]['weekly_lectures']
-                    
                     for lecture_num in range(weekly_lectures):
                         assignments.append({
                             'teacher_id': teacher_id,
@@ -376,29 +286,24 @@ class PostgreSQLTimetableGenerator:
                             'lecture_number': lecture_num + 1,
                             'weekly_lectures': weekly_lectures
                         })
-            
             return assignments, teachers, subjects, classes
-            
         except Exception as e:
             st.error(f"Error loading data: {e}")
             return [], {}, {}, {}
     
+    # ---- Timetable logic ----
     def generate_timetable(self, working_days, periods_per_day=6, break_periods=None):
-        """Generate timetable using constraint satisfaction"""
         if break_periods is None:
-            break_periods = [4]  # Lunch break at period 4
-            
+            break_periods = [4]
         self.working_days = working_days
         self.periods_per_day = periods_per_day
         
-        # Get all teaching assignments
         assignments, teachers, subjects, classes = self.get_teaching_assignments()
-        
         if not assignments:
             st.error("No teaching assignments found!")
             return False
         
-        # Initialize timetable structure
+        # initialize
         self.timetable = {}
         for class_id in classes:
             self.timetable[class_id] = {}
@@ -421,77 +326,45 @@ class PostgreSQLTimetableGenerator:
                             'subject_id': None,
                             'teacher_id': None
                         }
-        
-        # Reset tracking variables
+        # reset trackers
         self.teacher_schedule = defaultdict(lambda: defaultdict(list))
         self.class_schedule = defaultdict(lambda: defaultdict(list))
         self.teacher_workload = defaultdict(int)
         
-        # Shuffle assignments for randomization
         random.shuffle(assignments)
-        
-        # Schedule assignments using constraint satisfaction
         scheduled = 0
         total = len(assignments)
-        
         for assignment in assignments:
             if self.schedule_assignment(assignment, teachers, break_periods):
                 scheduled += 1
         
-        # Report results
-        success_rate = (scheduled / total) * 100 if total > 0 else 0
-        
-        if success_rate == 100:
-            st.success(f"✅ Perfect! Scheduled all {scheduled} lectures successfully!")
-        elif success_rate >= 90:
-            st.success(f"✅ Excellent! Scheduled {scheduled}/{total} lectures ({success_rate:.1f}%)")
-        elif success_rate >= 70:
-            st.warning(f"⚠️ Good! Scheduled {scheduled}/{total} lectures ({success_rate:.1f}%)")
+        if scheduled == total:
+            st.success(f"✅ Successfully scheduled all {scheduled} lectures!")
         else:
-            st.error(f"❌ Only scheduled {scheduled}/{total} lectures ({success_rate:.1f}%)")
+            st.warning(f"⚠️ Scheduled {scheduled} out of {total} lectures. {total - scheduled} conflicts remain.")
         
-        # Check teacher workload
         self.check_teacher_workload(teachers)
-        
         return True
     
     def schedule_assignment(self, assignment, teachers, break_periods):
-        """Try to schedule a single assignment"""
         teacher_id = assignment['teacher_id']
         class_id = assignment['class_id']
-        
-        # Get teacher's maximum lectures per week
         max_lectures = teachers[teacher_id]['max_lectures']
-        
-        # Check if teacher has exceeded workload
         if self.teacher_workload[teacher_id] >= max_lectures:
             return False
-        
-        # Try to find a suitable slot
         available_slots = []
-        
         for day in self.working_days:
             for period in range(1, self.periods_per_day + 1):
                 if period in break_periods:
                     continue
-                    
                 period_key = f'P{period}'
-                
-                # Check if slot is available for both teacher and class
                 if (period_key not in self.teacher_schedule[teacher_id][day] and
                     period_key not in self.class_schedule[class_id][day] and
                     self.timetable[class_id][day][period_key]['type'] == 'free'):
-                    
                     available_slots.append((day, period_key))
-        
-        # If no slots available, return False
         if not available_slots:
             return False
-        
-        # Choose a random available slot
         day, period_key = random.choice(available_slots)
-        
-        # Schedule the assignment
         self.timetable[class_id][day][period_key] = {
             'type': 'lecture',
             'subject': assignment['subject_name'],
@@ -499,38 +372,100 @@ class PostgreSQLTimetableGenerator:
             'subject_id': assignment['subject_id'],
             'teacher_id': assignment['teacher_id']
         }
-        
-        # Update tracking
         self.teacher_schedule[teacher_id][day].append(period_key)
         self.class_schedule[class_id][day].append(period_key)
         self.teacher_workload[teacher_id] += 1
-        
         return True
     
     def check_teacher_workload(self, teachers):
-        """Check and report teacher workload"""
         st.subheader("👨‍🏫 Teacher Workload Analysis")
-        
         workload_data = []
         for teacher_id, current_load in self.teacher_workload.items():
-            if teacher_id in teachers:
-                max_load = teachers[teacher_id]['max_lectures']
-                teacher_name = teachers[teacher_id]['name']
-                
-                workload_data.append({
-                    'Teacher ID': teacher_id,
-                    'Teacher Name': teacher_name,
-                    'Current Load': current_load,
-                    'Max Load': max_load,
-                    'Utilization (%)': round((current_load / max_load) * 100, 1) if max_load > 0 else 0,
-                    'Status': '✅ Optimal' if current_load <= max_load else '⚠️ Overloaded'
-                })
-        
-        if workload_data:
-            workload_df = pd.DataFrame(workload_data)
-            st.dataframe(workload_df, use_container_width=True)
-        else:
-            st.info("No workload data available")
+            max_load = teachers[teacher_id]['max_lectures']
+            teacher_name = teachers[teacher_id]['name']
+            utilization = round((current_load / max_load) * 100, 1) if max_load > 0 else 0
+            workload_data.append({
+                'Teacher ID': teacher_id,
+                'Teacher Name': teacher_name,
+                'Current Load': current_load,
+                'Max Load': max_load,
+                'Utilization (%)': utilization,
+                'Status': 'Optimal' if current_load <= max_load else 'Overloaded'
+            })
+        workload_df = pd.DataFrame(workload_data)
+        if workload_df.empty:
+            st.info("No workload data to show yet.")
+            return
+        def highlight_status(val):
+            color = 'lightgreen' if val == 'Optimal' else 'lightcoral'
+            return f'background-color: {color}'
+        styled_df = workload_df.style.applymap(highlight_status, subset=['Status'])
+        st.dataframe(styled_df, use_container_width=True)
 
-# Initialize session state
-if 'generator' not in st.se
+# ---------- Initialize session state ----------
+if 'db' not in st.session_state:
+    st.session_state.db = PostgresDB()
+if 'generator' not in st.session_state:
+    st.session_state.generator = SQLTimetableGenerator(st.session_state.db)
+
+# ---------- Sidebar: DB connection UI ----------
+with st.sidebar:
+    st.header("🔧 Database Configuration (Postgres)")
+    st.write("Connect using a DATABASE URL or provide components.")
+    use_url = st.checkbox("Use DATABASE_URL (single string)", value=True)
+    
+    if use_url:
+        database_url = st.text_input("DATABASE_URL", placeholder="postgresql://user:pass@host:port/dbname")
+    else:
+        host = st.text_input("Host", value="localhost")
+        port = st.text_input("Port", value="5432")
+        dbname = st.text_input("DB name", value="postgres")
+        user = st.text_input("User", value="")
+        password = st.text_input("Password", type="password")
+    schema_input = st.text_input("Optional schema to search (leave blank to use public/default)", value="")
+    
+    if st.button("🔗 Connect to PostgreSQL"):
+        try:
+            if use_url:
+                ok, err = st.session_state.db.connect(database_url=database_url, schema=schema_input or None)
+            else:
+                ok, err = st.session_state.db.connect(host=host, port=int(port), dbname=dbname, user=user, password=password, schema=schema_input or None)
+            if ok:
+                st.success("Connected to PostgreSQL!")
+                st.session_state.db_connected = True
+            else:
+                st.error(f"Failed to connect: {err}")
+                st.session_state.db_connected = False
+        except Exception as e:
+            st.error(f"Error: {e}")
+            st.session_state.db_connected = False
+    
+    if st.button("📊 Show DB Tables") and getattr(st.session_state, 'db_connected', False):
+        try:
+            tables = st.session_state.db.list_tables()
+            if tables:
+                st.write("Found tables:")
+                st.write(tables)
+            else:
+                st.info("No user tables found.")
+        except Exception as e:
+            st.error(str(e))
+    
+    st.divider()
+    st.subheader("Timetable Settings")
+    days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
+    working_days = []
+    cols = st.columns(2)
+    for i, day in enumerate(days):
+        with cols[i % 2]:
+            if st.checkbox(day, value=(day != 'Saturday')):
+                working_days.append(day)
+    periods_per_day = st.slider("Periods per Day", 4, 8, 6)
+    break_periods = st.multiselect("Break Periods", options=list(range(1, periods_per_day + 1)), default=[4])
+    
+    if st.button("🎯 Generate Timetable"):
+        if not getattr(st.session_state, 'db_connected', False):
+            st.error("❌ Connect to the database first.")
+        elif not working_days:
+            st.error("❌ Select at least one working day.")
+       
