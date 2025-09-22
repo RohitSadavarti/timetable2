@@ -398,9 +398,9 @@ class SQLTimetableGenerator:
         total = len(expanded_assignments)
         
         if scheduled == total:
-            st.success(f"✅ Successfully scheduled all {scheduled} lectures! No free periods.")
+            st.success(f"Successfully scheduled all {scheduled} lectures! No free periods.")
         else:
-            st.warning(f"⚠️ Scheduled {scheduled} out of {total} lectures. {total - scheduled} slots remain unassigned.")
+            st.warning(f"Scheduled {scheduled} out of {total} lectures. {total - scheduled} slots remain unassigned.")
         
         self.check_teacher_workload(teachers)
         return True
@@ -504,7 +504,7 @@ class SQLTimetableGenerator:
         return True
     
     def check_teacher_workload(self, teachers):
-        st.subheader("👨‍🏫 Teacher Workload Analysis")
+        st.subheader("Teacher Workload Analysis")
         workload_data = []
         
         for teacher_id, current_load in self.teacher_workload.items():
@@ -539,10 +539,10 @@ class SQLTimetableGenerator:
             st.info("No timetable generated yet.")
             return
         
-        st.subheader("📅 Generated Timetables")
+        st.subheader("Generated Timetables")
         
         for class_id, class_schedule in self.timetable.items():
-            with st.expander(f"📚 Class: {class_id}", expanded=True):
+            with st.expander(f"Class: {class_id}", expanded=True):
                 # Create DataFrame for display
                 timetable_data = []
                 periods = [f'P{i}' for i in range(1, self.periods_per_day + 1)]
@@ -552,11 +552,11 @@ class SQLTimetableGenerator:
                     for period in periods:
                         entry = class_schedule[day][period]
                         if entry['type'] == 'break':
-                            row[period] = f"🍽️ {entry['subject']}"
+                            row[period] = f"{entry['subject']}"
                         elif entry['type'] == 'empty':
-                            row[period] = f"⚪ Unassigned"
+                            row[period] = f"Unassigned"
                         else:
-                            row[period] = f"📖 {entry['subject']}\n👨‍🏫 {entry['teacher']}"
+                            row[period] = f"{entry['subject']}\n{entry['teacher']}"
                     timetable_data.append(row)
                 
                 df = pd.DataFrame(timetable_data)
@@ -583,13 +583,13 @@ if not st.session_state.db_connected:
 if st.session_state.db_connected:
     st.markdown("""
     <div class="connection-status connected">
-        🟢 Connected to PostgreSQL Database
+        Connected to PostgreSQL Database
     </div>
     """, unsafe_allow_html=True)
 else:
     st.markdown("""
     <div class="connection-status disconnected">
-        🔴 Database Connection Failed
+        Database Connection Failed
     </div>
     """, unsafe_allow_html=True)
     st.error("Failed to connect to the database. Please check your connection settings.")
@@ -598,7 +598,7 @@ else:
 col1, col2 = st.columns([1, 2])
 
 with col1:
-    st.subheader("⚙️ Timetable Settings")
+    st.subheader("Timetable Settings")
     
     # Working Days Selection
     st.write("**Working Days:**")
@@ -623,12 +623,12 @@ with col1:
     )
     
     # Generate Button
-    generate_button = st.button("🎯 Generate Timetable", type="primary", use_container_width=True)
+    generate_button = st.button("Generate Timetable", type="primary", use_container_width=True)
 
 with col2:
     # Database Tables Info
     if st.session_state.db_connected:
-        if st.button("📊 Show Available Tables"):
+        if st.button("Show Available Tables"):
             try:
                 tables = st.session_state.db.list_tables()
                 if tables:
@@ -643,9 +643,9 @@ with col2:
 # ---------- Generate Timetable ----------
 if generate_button:
     if not st.session_state.db_connected:
-        st.error("❌ Database connection required.")
+        st.error("Database connection required.")
     elif not working_days:
-        st.error("❌ Please select at least one working day.")
+        st.error("Please select at least one working day.")
     else:
         with st.spinner("Generating timetable..."):
             success = st.session_state.generator.generate_timetable(
