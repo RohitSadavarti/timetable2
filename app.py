@@ -512,7 +512,7 @@ class SQLTimetableGenerator:
          #   teacher_name = teachers[teacher_id]['name']
           #  utilization = round((current_load / max_load) * 100, 2) if max_load > 0 else 0
 #-------------------------------------------------------------------------------
-         for teacher_id, current_load in self.teacher_workload.items():
+        for teacher_id, current_load in self.teacher_workload.items():
             max_load = teachers[teacher_id]['max_lectures']
             teacher_name = teachers[teacher_id]['name']
             utilization = (current_load / max_load * 100) if max_load > 0 else 0
