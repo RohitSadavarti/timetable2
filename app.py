@@ -506,12 +506,20 @@ class SQLTimetableGenerator:
     def check_teacher_workload(self, teachers):
         st.subheader("Teacher Workload Analysis")
         workload_data = []
-        
-        for teacher_id, current_load in self.teacher_workload.items():
+ #------------------------------------------------------------------------------
+       # for teacher_id, current_load in self.teacher_workload.items():
+        #    max_load = teachers[teacher_id]['max_lectures']
+         #   teacher_name = teachers[teacher_id]['name']
+          #  utilization = round((current_load / max_load) * 100, 2) if max_load > 0 else 0
+#-------------------------------------------------------------------------------
+         for teacher_id, current_load in self.teacher_workload.items():
             max_load = teachers[teacher_id]['max_lectures']
             teacher_name = teachers[teacher_id]['name']
-            utilization = round((current_load / max_load) * 100, 1) if max_load > 0 else 0
-            
+            utilization = (current_load / max_load * 100) if max_load > 0 else 0
+            utilization = "{:.2f}".format(utilization)  # ensures two decimals like 99.80
+            print(teacher_id, teacher_name, utilization)
+  
+ 
             workload_data.append({
                 'Teacher ID': teacher_id,
                 'Teacher Name': teacher_name,
