@@ -1,7 +1,6 @@
 # app.py
 import streamlit as st
 import pandas as pd
-import mysql.connector
 import psycopg2
 import psycopg2.extras
 import random
