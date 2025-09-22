@@ -296,7 +296,7 @@ class SQLTimetableGenerator:
                 class_id = mapping['class_id']
                 subject_id = mapping['subject_id']
                 
-                if teacher_id in teachers and class_id in classes and subject_id in subjects:
+                if teacher_id in teachers_table and class_id in classes and subject_id in subjects:
                     weekly_lectures = subjects[subject_id]['weekly_lectures']
                     for lecture_num in range(weekly_lectures):
                         assignments.append({
