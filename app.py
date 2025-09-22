@@ -1,6 +1,7 @@
 # app.py
 import streamlit as st
 import pandas as pd
+import mysql.connector
 import psycopg2
 import psycopg2.extras
 import random
@@ -8,6 +9,28 @@ from datetime import datetime
 from collections import defaultdict
 import os
 from urllib.parse import urlparse
+
+CORS(app)
+
+# Database configuration
+app.config['UPLOAD_FOLDER'] = 'uploads/'
+app.config['ALLOWED_EXTENSIONS'] = {'xlsx', 'xls', 'csv'}
+app.config['PG_HOST'] = 'aws-0-ap-south-1.pooler.supabase.com'
+app.config['PG_USER'] = 'postgres.avqpzwgdylnklbkyqukp'  # change to your PostgreSQL username
+app.config['PG_PASSWORD'] = 'asBjLmDfKfoZPVt9'  # change to your PostgreSQL password
+app.config['PG_DB'] = 'postgres'  # change to your PostgreSQL database name
+app.config['sslmode']='require'
+
+def get_pg_connection():
+    return psycopg2.connect(
+        host="aws-0-ap-south-1.pooler.supabase.com",
+        database="postgres",
+        user="postgres.avqpzwgdylnklbkyqukp",
+        password="asBjLmDfKfoZPVt9",
+        port=6543,
+        sslmode='require'
+    )
+
 
 # ---------- Page config & CSS ----------
 st.set_page_config(
