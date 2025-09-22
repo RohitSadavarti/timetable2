@@ -9,16 +9,16 @@ from collections import defaultdict
 import os
 from urllib.parse import urlparse
 from flask_cors import CORS
-CORS(app)
+#CORS(app)
 
 # Database configuration
-app.config['UPLOAD_FOLDER'] = 'uploads/'
-app.config['ALLOWED_EXTENSIONS'] = {'xlsx', 'xls', 'csv'}
-app.config['PG_HOST'] = 'aws-0-ap-south-1.pooler.supabase.com'
-app.config['PG_USER'] = 'postgres.avqpzwgdylnklbkyqukp'  # change to your PostgreSQL username
-app.config['PG_PASSWORD'] = 'asBjLmDfKfoZPVt9'  # change to your PostgreSQL password
-app.config['PG_DB'] = 'postgres'  # change to your PostgreSQL database name
-app.config['sslmode']='require'
+#app.config['UPLOAD_FOLDER'] = 'uploads/'
+#app.config['ALLOWED_EXTENSIONS'] = {'xlsx', 'xls', 'csv'}
+#app.config['PG_HOST'] = 'aws-0-ap-south-1.pooler.supabase.com'
+#app.config['PG_USER'] = 'postgres.avqpzwgdylnklbkyqukp'  # change to your PostgreSQL username
+#app.config['PG_PASSWORD'] = 'asBjLmDfKfoZPVt9'  # change to your PostgreSQL password
+#app.config['PG_DB'] = 'postgres'  # change to your PostgreSQL database name
+#app.config['sslmode']='require'
 
 def get_pg_connection():
     return psycopg2.connect(
