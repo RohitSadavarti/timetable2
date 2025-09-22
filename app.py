@@ -8,7 +8,7 @@ from datetime import datetime
 from collections import defaultdict
 import os
 from urllib.parse import urlparse
-
+from flask_cors import CORS
 CORS(app)
 
 # Database configuration
